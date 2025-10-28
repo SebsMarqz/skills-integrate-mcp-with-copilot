@@ -5,7 +5,9 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+import secrets
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 import os
@@ -78,6 +80,45 @@ activities = {
 }
 
 
+# Simple HTTP Basic auth for teacher users.
+security = HTTPBasic()
+
+# Load teachers from a JSON file (simple exercise storage). The file contains a list of
+# teacher credentials in the form: { "teachers": [{"username": "t1", "password": "pass"}] }
+def load_teachers():
+    import json
+    teachers_path = Path(__file__).parent / "teachers.json"
+    if not teachers_path.exists():
+        return {}
+    with open(teachers_path, "r", encoding="utf-8") as f:
+        try:
+            data = json.load(f)
+            # build dict username->password
+            return {t["username"]: t["password"] for t in data.get("teachers", [])}
+        except Exception:
+            return {}
+
+
+def get_current_teacher(credentials: HTTPBasicCredentials = Depends(security)):
+    """Validate the provided basic auth credentials against `teachers.json`.
+
+    This is a minimal, exercise-level auth implementation. Passwords are stored in
+    plain text in `teachers.json` for simplicity. Do NOT use this approach in
+    production — replace with hashed passwords and a proper secret store.
+    """
+    teachers = load_teachers()
+    username = credentials.username
+    password = credentials.password
+
+    # simple compare using secrets.compare_digest to mitigate timing attacks
+    expected = teachers.get(username)
+    if expected is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not secrets.compare_digest(password, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return username
+
+
 @app.get("/")
 def root():
     return RedirectResponse(url="/static/index.html")
@@ -89,8 +130,12 @@ def get_activities():
 
 
 @app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str):
-    """Sign up a student for an activity"""
+def signup_for_activity(activity_name: str, email: str, teacher: str = Depends(get_current_teacher)):
+    """Sign up a student for an activity.
+
+    Only authenticated teachers may register students (per project requirement).
+    The `teacher` param is the username of the authenticated teacher (from `teachers.json`).
+    """
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
@@ -111,8 +156,11 @@ def signup_for_activity(activity_name: str, email: str):
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
-    """Unregister a student from an activity"""
+def unregister_from_activity(activity_name: str, email: str, teacher: str = Depends(get_current_teacher)):
+    """Unregister a student from an activity.
+
+    Only authenticated teachers may unregister students.
+    """
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
